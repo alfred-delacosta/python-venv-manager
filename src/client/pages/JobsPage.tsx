@@ -1,8 +1,10 @@
 /* Copyright Advanced Software and AI Solutions LLC */
 import { useEffect, useState } from 'react';
-import { Link as RouterLink, useParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import {
   Button,
+  Fade,
+  Grow,
   Paper,
   Stack,
   Typography,
@@ -13,6 +15,8 @@ import {
   TableBody,
 } from '@mui/material';
 import { useSession } from '../session';
+import { LiveView } from '../components/LiveView';
+import { motionDuration } from '../motion';
 
 type Job = {
   id: number;
@@ -28,12 +32,13 @@ type Job = {
 export function JobsPage() {
   const { id } = useParams();
   const { api } = useSession();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selected, setSelected] = useState<Job | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    async function tick() {
+    async function load() {
       const res = await api('/api/jobs');
       if (!res.ok) return;
       const data = (await res.json()) as { jobs: Job[] };
@@ -49,8 +54,8 @@ export function JobsPage() {
         setSelected(null);
       }
     }
-    void tick();
-    const timer = setInterval(() => void tick(), 1500);
+    void load();
+    const timer = setInterval(() => void load(), 4000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -58,78 +63,72 @@ export function JobsPage() {
   }, [api, id]);
 
   return (
-    <Stack spacing={3}>
-      <Typography variant="h4" component="h1">
-        Jobs
-      </Typography>
-      <Typography color="text.secondary">
-        Status is polled. Live streaming arrives in a later phase.
-      </Typography>
-      {selected && (
+    <Fade in timeout={motionDuration(220)}>
+      <Stack spacing={3}>
+        <Typography variant="h4" component="h1">
+          Jobs
+        </Typography>
+        <Typography color="text.secondary">
+          Install and update jobs stream live. Open a job to watch output.
+        </Typography>
+        {selected && (
+          <Grow in timeout={motionDuration(250)}>
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <LiveView
+                kind="job"
+                id={selected.id}
+                title={`Job #${selected.id} · ${selected.type}`}
+                onFinished={() => {
+                  void api(`/api/jobs/${selected.id}`).then(async (res) => {
+                    if (!res.ok) return;
+                    const body = (await res.json()) as { job: Job };
+                    setSelected(body.job);
+                  });
+                }}
+              />
+              {selected.error && (
+                <Typography color="error" sx={{ mt: 1 }}>
+                  {selected.error}
+                </Typography>
+              )}
+            </Paper>
+          </Grow>
+        )}
         <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1}>
-            <Typography variant="h5" component="h2">
-              Job #{selected.id} · {selected.type} · {selected.status}
-            </Typography>
-            {(selected.status === 'queued' || selected.status === 'running') && (
-              <Button
-                color="warning"
-                variant="outlined"
-                onClick={() => void api(`/api/jobs/${selected.id}/cancel`, { method: 'POST', body: '{}' })}
-              >
-                Cancel
-              </Button>
-            )}
-          </Stack>
-          {selected.error && (
-            <Typography color="error" sx={{ mt: 1 }}>
-              {selected.error}
-            </Typography>
-          )}
-          <Typography
-            component="pre"
-            sx={{
-              mt: 2,
-              p: 2,
-              bgcolor: 'action.hover',
-              overflow: 'auto',
-              maxHeight: 420,
-              fontFamily: 'Consolas, monospace',
-              fontSize: 13,
-            }}
-          >
-            {selected.log || 'No log yet.'}
-          </Typography>
-        </Paper>
-      )}
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Table aria-label="Jobs">
-          <TableHead>
-            <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Slug</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Created</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {jobs.map((job) => (
-              <TableRow key={job.id} hover selected={String(job.id) === id}>
-                <TableCell>
-                  <Button component={RouterLink} to={`/jobs/${job.id}`}>
-                    #{job.id}
-                  </Button>
-                </TableCell>
-                <TableCell>{job.type}</TableCell>
-                <TableCell>{job.slug ?? '-'}</TableCell>
-                <TableCell>{job.status}</TableCell>
-                <TableCell>{job.created_at}</TableCell>
+          <Table aria-label="Jobs">
+            <TableHead>
+              <TableRow>
+                <TableCell>ID</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Slug</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>Created</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Paper>
-    </Stack>
+            </TableHead>
+            <TableBody>
+              {jobs.map((job) => (
+                <TableRow
+                  key={job.id}
+                  hover
+                  selected={String(job.id) === id}
+                  onClick={() => navigate(`/jobs/${job.id}`)}
+                  sx={{ cursor: 'pointer' }}
+                >
+                  <TableCell>
+                    <Button component={RouterLink} to={`/jobs/${job.id}`}>
+                      #{job.id}
+                    </Button>
+                  </TableCell>
+                  <TableCell>{job.type}</TableCell>
+                  <TableCell>{job.slug ?? '-'}</TableCell>
+                  <TableCell>{job.status}</TableCell>
+                  <TableCell>{job.created_at}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Paper>
+      </Stack>
+    </Fade>
   );
 }

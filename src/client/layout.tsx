@@ -17,6 +17,8 @@ const nav = [
   { to: '/', label: 'Dashboard' },
   { to: '/add', label: 'Add' },
   { to: '/jobs', label: 'Jobs' },
+  { to: '/history', label: 'History' },
+  { to: '/audit', label: 'Audit' },
   { to: '/settings', label: 'Settings' },
   { to: '/health', label: 'Health' },
 ];

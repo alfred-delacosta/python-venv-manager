@@ -4,6 +4,7 @@ import createCache from '@emotion/cache';
 import { CacheProvider } from '@emotion/react';
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material';
 import { SessionProvider } from './session';
+import { prefersReducedMotion } from './motion';
 
 function readNonce(): string | undefined {
   return document.querySelector('meta[name="csp-nonce"]')?.getAttribute('content') ?? undefined;
@@ -14,6 +15,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem('pyapps-theme');
     return saved === 'dark' ? 'dark' : 'light';
   });
+  const reduceMotion = prefersReducedMotion();
 
   const cache = useMemo(
     () =>
@@ -42,8 +44,20 @@ export function AppProviders({ children }: { children: ReactNode }) {
           h4: { fontWeight: 700 },
         },
         shape: { borderRadius: 8 },
+        transitions: {
+          duration: {
+            shortest: reduceMotion ? 0 : 150,
+            shorter: reduceMotion ? 0 : 200,
+            short: reduceMotion ? 0 : 250,
+            standard: reduceMotion ? 0 : 300,
+            complex: reduceMotion ? 0 : 300,
+            enteringScreen: reduceMotion ? 0 : 225,
+            leavingScreen: reduceMotion ? 0 : 195,
+          },
+        },
         components: {
           MuiButton: {
+            defaultProps: { disableRipple: reduceMotion },
             styleOverrides: {
               root: {
                 minHeight: 44,
@@ -53,13 +67,19 @@ export function AppProviders({ children }: { children: ReactNode }) {
             },
           },
           MuiIconButton: {
+            defaultProps: { disableRipple: reduceMotion },
             styleOverrides: {
               root: { minHeight: 44, minWidth: 44 },
             },
           },
+          MuiCssBaseline: {
+            styleOverrides: reduceMotion
+              ? { html: { scrollBehavior: 'auto' } }
+              : undefined,
+          },
         },
       }),
-    [mode],
+    [mode, reduceMotion],
   );
 
   return (

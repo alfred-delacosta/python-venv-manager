@@ -31,4 +31,5 @@
 ## Phase scope
 
 - 1A: auth, LAN guard, uv install/catalog, CLI, polled job status
-- 1B: live runs, history UI, presets, audit viewer, motion polish
+- 1B: SSE live runs and job logs, history UI, presets, audit viewer, motion polish
+- Later: update notices, bulk import, schedules, secrets, favorites

@@ -75,6 +75,10 @@ On Windows you can also add a `.cmd` shim on your PATH. Elsewhere, link into `~/
 | `npm run admin:reset-password` | Prompt for a new admin password |
 | `npm run backup` | `VACUUM INTO` a timestamped SQLite copy |
 
+## Live runs and history
+
+From an app detail page, pick an entry point or preset, start a run, and watch Server-Sent Events output. Cancel posts with CSRF. History lists web and `pyapp` runs together. Audit is read only under Audit in the nav.
+
 ## Docs
 
 - [Security model](docs/security.md)

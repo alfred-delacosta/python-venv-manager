@@ -1,6 +1,6 @@
 /* Copyright Advanced Software and AI Solutions LLC */
-import { Route, Routes } from 'react-router-dom';
-import { CircularProgress, Stack, Typography } from '@mui/material';
+import { Route, Routes, useLocation } from 'react-router-dom';
+import { CircularProgress, Fade, Stack, Typography } from '@mui/material';
 import { Layout } from './layout';
 import { useSession } from './session';
 import { DashboardPage } from './pages/DashboardPage';
@@ -9,9 +9,14 @@ import { DetailPage } from './pages/DetailPage';
 import { JobsPage } from './pages/JobsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { HealthPage } from './pages/HealthPage';
+import { HistoryPage } from './pages/HistoryPage';
+import { AuditPage } from './pages/AuditPage';
+import { LiveRunPage } from './pages/LiveRunPage';
+import { motionDuration } from './motion';
 
 export default function App() {
   const { loading, error } = useSession();
+  const location = useLocation();
   if (loading) {
     return (
       <Stack alignItems="center" justifyContent="center" minHeight="100vh" gap={2}>
@@ -29,15 +34,22 @@ export default function App() {
   }
   return (
     <Layout>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/add" element={<AddWizardPage />} />
-        <Route path="/apps/:slug" element={<DetailPage />} />
-        <Route path="/jobs" element={<JobsPage />} />
-        <Route path="/jobs/:id" element={<JobsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/health" element={<HealthPage />} />
-      </Routes>
+      <Fade key={location.pathname} in timeout={motionDuration(200)}>
+        <div>
+          <Routes location={location}>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/add" element={<AddWizardPage />} />
+            <Route path="/apps/:slug" element={<DetailPage />} />
+            <Route path="/jobs" element={<JobsPage />} />
+            <Route path="/jobs/:id" element={<JobsPage />} />
+            <Route path="/live/run/:id" element={<LiveRunPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/health" element={<HealthPage />} />
+          </Routes>
+        </div>
+      </Fade>
     </Layout>
   );
 }
