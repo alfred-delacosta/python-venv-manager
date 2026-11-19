@@ -30,8 +30,42 @@ import {
   parseInstallSourceBody,
   startJobRunner,
 } from '../core/jobs.js';
-import { parseRunArgs, parseSlug } from '../core/validators.js';
+import { parseRunArgs, parseSlug, ValidationError } from '../core/validators.js';
 import { FOOTER_CREDIT } from '../core/copyright.js';
+import {
+  appendStreamLine,
+  closeStream,
+  isStreamClosed,
+  streamKeyJob,
+  streamKeyRun,
+} from '../core/stream-hub.js';
+
+function seedFinishedStream(
+  key: string,
+  log: string,
+  endStatus: string,
+  finished: boolean,
+): void {
+  if (!finished || isStreamClosed(key)) return;
+  if (log) appendStreamLine(key, log);
+  closeStream(key, endStatus);
+}
+import {
+  cancelWebRun,
+  getRun,
+  isRunActive,
+  listRuns,
+  startWebRun,
+} from '../core/runs.js';
+import {
+  createPreset,
+  deletePreset,
+  getPreset,
+  listPresets,
+  renamePreset,
+  updatePresetArgs,
+} from '../core/presets.js';
+import { getAudit, listAudit } from '../core/audit-query.js';
 import { authenticate, ensureAdminUser, getUser } from './users.js';
 import {
   destroySession,
@@ -41,6 +75,7 @@ import {
   validateSession,
 } from './sessions.js';
 import { resolveHome } from './home.js';
+import { attachSseStream } from './sse.js';
 
 const SESSION_COOKIE = 'pyapps_session';
 
@@ -200,7 +235,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     (request as FastifyRequest & { scriptNonce: string }).scriptNonce = nonce;
     void reply.header(
       'Content-Security-Policy',
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
     );
     void reply.header('X-Content-Type-Options', 'nosniff');
     void reply.header('Referrer-Policy', 'no-referrer');
@@ -374,6 +409,233 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  app.get('/api/jobs/:id/events', { preHandler: requireAuth }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const job = getJob(db, id);
+    if (!job) return reply.code(404).send({ error: 'Not found' });
+    const key = streamKeyJob(id);
+    seedFinishedStream(key, job.log, job.status, ['succeeded', 'failed', 'cancelled'].includes(job.status));
+    attachSseStream(request, reply, key);
+  });
+
+  app.post(
+    '/api/runs',
+    {
+      preHandler: requireAuth,
+      config: { rateLimit: { max: JOB_RATE_PER_MINUTE, timeWindow: '1 minute' } },
+    },
+    async (request, reply) => {
+      requireCsrf(request, reply);
+      if (reply.sent) return;
+      const body = z
+        .object({
+          slug: z.string(),
+          entryPoint: z.string().optional(),
+          args: z.array(z.string()).optional(),
+          presetId: z.number().int().optional(),
+          cwd: z.string().optional(),
+        })
+        .parse(request.body);
+      try {
+        const run = startWebRun(db, {
+          slug: body.slug,
+          entryPoint: body.entryPoint,
+          args: body.args,
+          presetId: body.presetId,
+          cwd: body.cwd,
+          who: request.username ?? 'admin',
+          ip: clientIp(request),
+        });
+        return { run };
+      } catch (err) {
+        const status = err instanceof ValidationError ? 400 : 500;
+        return reply.code(status).send({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+
+  app.get('/api/runs', { preHandler: requireAuth }, async (request) => {
+    const q = request.query as Record<string, string | undefined>;
+    return listRuns(db, {
+      slug: q.slug,
+      source: q.source === 'cli' || q.source === 'web' ? q.source : undefined,
+      result:
+        q.result === 'ok' || q.result === 'failed' || q.result === 'running'
+          ? q.result
+          : undefined,
+      from: q.from,
+      to: q.to,
+      limit: q.limit ? Number(q.limit) : undefined,
+      offset: q.offset ? Number(q.offset) : undefined,
+    });
+  });
+
+  app.get('/api/apps/:slug/runs', { preHandler: requireAuth }, async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const appRow = getAppBySlug(db, parseSlug(slug));
+    if (!appRow) return reply.code(404).send({ error: 'Not found' });
+    const q = request.query as Record<string, string | undefined>;
+    return listRuns(db, {
+      appId: appRow.id,
+      source: q.source === 'cli' || q.source === 'web' ? q.source : undefined,
+      result:
+        q.result === 'ok' || q.result === 'failed' || q.result === 'running'
+          ? q.result
+          : undefined,
+      from: q.from,
+      to: q.to,
+      limit: q.limit ? Number(q.limit) : undefined,
+      offset: q.offset ? Number(q.offset) : undefined,
+    });
+  });
+
+  app.get('/api/runs/:id', { preHandler: requireAuth }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const run = getRun(db, id);
+    if (!run) return reply.code(404).send({ error: 'Not found' });
+    return { run, active: isRunActive(id) };
+  });
+
+  app.get('/api/runs/:id/events', { preHandler: requireAuth }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const run = getRun(db, id);
+    if (!run) return reply.code(404).send({ error: 'Not found' });
+    const key = streamKeyRun(id);
+    const finished = Boolean(run.ended_at) && !isRunActive(id);
+    seedFinishedStream(
+      key,
+      run.log,
+      run.exit_code === 0 ? 'ok' : 'failed',
+      finished,
+    );
+    attachSseStream(request, reply, key);
+  });
+
+  app.post('/api/runs/:id/cancel', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const id = Number((request.params as { id: string }).id);
+    try {
+      await cancelWebRun(db, id, request.username ?? 'admin', clientIp(request));
+      return { ok: true };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get('/api/apps/:slug/presets', { preHandler: requireAuth }, async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const appRow = getAppBySlug(db, parseSlug(slug));
+    if (!appRow) return reply.code(404).send({ error: 'Not found' });
+    return { presets: listPresets(db, appRow.id) };
+  });
+
+  app.post('/api/apps/:slug/presets', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const { slug } = request.params as { slug: string };
+    const appRow = getAppBySlug(db, parseSlug(slug));
+    if (!appRow) return reply.code(404).send({ error: 'Not found' });
+    const body = z
+      .object({
+        name: z.string(),
+        entryPoint: z.string(),
+        args: z.array(z.string()).default([]),
+      })
+      .parse(request.body);
+    try {
+      const preset = createPreset(db, {
+        app_id: appRow.id,
+        name: body.name,
+        entry_point: body.entryPoint,
+        args: body.args,
+      });
+      writeAudit(db, {
+        who: request.username ?? 'admin',
+        action: 'preset.create',
+        result: 'ok',
+        details: JSON.stringify({ id: preset.id, slug }),
+        ip: clientIp(request),
+      });
+      return { preset };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.patch('/api/presets/:id', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const id = Number((request.params as { id: string }).id);
+    const body = z
+      .object({
+        name: z.string().optional(),
+        entryPoint: z.string().optional(),
+        args: z.array(z.string()).optional(),
+      })
+      .parse(request.body);
+    try {
+      let preset = getPreset(db, id);
+      if (!preset) return reply.code(404).send({ error: 'Not found' });
+      if (body.name !== undefined) preset = renamePreset(db, id, body.name);
+      if (body.entryPoint !== undefined || body.args !== undefined) {
+        preset = updatePresetArgs(db, id, {
+          entry_point: body.entryPoint,
+          args: body.args,
+        });
+      }
+      writeAudit(db, {
+        who: request.username ?? 'admin',
+        action: 'preset.update',
+        result: 'ok',
+        details: JSON.stringify({ id }),
+        ip: clientIp(request),
+      });
+      return { preset };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete('/api/presets/:id', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const id = Number((request.params as { id: string }).id);
+    const preset = getPreset(db, id);
+    if (!preset) return reply.code(404).send({ error: 'Not found' });
+    deletePreset(db, id);
+    writeAudit(db, {
+      who: request.username ?? 'admin',
+      action: 'preset.delete',
+      result: 'ok',
+      details: JSON.stringify({ id }),
+      ip: clientIp(request),
+    });
+    return { ok: true };
+  });
+
+  app.get('/api/audit', { preHandler: requireAuth }, async (request) => {
+    const q = request.query as Record<string, string | undefined>;
+    return listAudit(db, {
+      action: q.action,
+      result: q.result,
+      ip: q.ip,
+      from: q.from,
+      to: q.to,
+      limit: q.limit ? Number(q.limit) : undefined,
+      offset: q.offset ? Number(q.offset) : undefined,
+    });
+  });
+
+  app.get('/api/audit/:id', { preHandler: requireAuth }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getAudit(db, id);
+    if (!row) return reply.code(404).send({ error: 'Not found' });
+    return { audit: row };
   });
 
   app.get('/api/settings', { preHandler: requireAuth }, async () => {
