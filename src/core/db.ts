@@ -96,9 +96,22 @@ export function migrate(db: Db): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS presets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      entry_point TEXT NOT NULL,
+      args_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(app_id, name),
+      FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_runs_app_id ON runs(app_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_presets_app ON presets(app_id, name COLLATE NOCASE);
   `);
 }
 
