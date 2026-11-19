@@ -23,6 +23,7 @@ import {
   type InstallSource,
 } from './validators.js';
 import { writeAudit } from './audit.js';
+import { appendStreamLine, appendStreamStatus, closeStream, streamKeyJob } from './stream-hub.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
@@ -104,6 +105,7 @@ function appendJobLog(db: Db, jobId: number, chunk: string): void {
   if (!job) return;
   const log = appendCappedLog(job.log, chunk, MAX_LOG_BYTES);
   db.prepare('UPDATE jobs SET log = ? WHERE id = ?').run(log, jobId);
+  appendStreamLine(streamKeyJob(jobId), chunk);
 }
 
 function setJobStatus(
@@ -117,15 +119,19 @@ function setJobStatus(
     db.prepare(
       `UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
     ).run(status, ts, jobId);
+    appendStreamStatus(streamKeyJob(jobId), status);
     return;
   }
   if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
     db.prepare(
       `UPDATE jobs SET status = ?, error = COALESCE(?, error), finished_at = ? WHERE id = ?`,
     ).run(status, error ?? null, ts, jobId);
+    appendStreamStatus(streamKeyJob(jobId), status);
+    closeStream(streamKeyJob(jobId), status);
     return;
   }
   db.prepare(`UPDATE jobs SET status = ? WHERE id = ?`).run(status, jobId);
+  appendStreamStatus(streamKeyJob(jobId), status);
 }
 
 async function executeJob(db: Db, jobId: number): Promise<void> {
