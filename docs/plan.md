@@ -18,12 +18,14 @@ SSE live job/run logs, web runs, history, presets, audit viewer, motion polish.
 
 Branch: `cursor/venv-manager-phase2-509c`.
 
-See [phase-2.md](phase-2.md) for the full plan.
+See [phase-2.md](phase-2.md).
 
 1. Update-available notices
 2. Bulk import of existing venvs
 3. Scheduled runs
 4. Catalog export
+
+Implementation is on this branch pending PR review.
 
 ## Later
 

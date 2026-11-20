@@ -12,6 +12,8 @@ import { HealthPage } from './pages/HealthPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { AuditPage } from './pages/AuditPage';
 import { LiveRunPage } from './pages/LiveRunPage';
+import { ImportPage } from './pages/ImportPage';
+import { SchedulesPage } from './pages/SchedulesPage';
 import { motionDuration } from './motion';
 
 export default function App() {
@@ -39,11 +41,13 @@ export default function App() {
           <Routes location={location}>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/add" element={<AddWizardPage />} />
+            <Route path="/import" element={<ImportPage />} />
             <Route path="/apps/:slug" element={<DetailPage />} />
             <Route path="/jobs" element={<JobsPage />} />
             <Route path="/jobs/:id" element={<JobsPage />} />
             <Route path="/live/run/:id" element={<LiveRunPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/schedules" element={<SchedulesPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/health" element={<HealthPage />} />

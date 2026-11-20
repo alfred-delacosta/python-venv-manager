@@ -77,7 +77,14 @@ On Windows you can also add a `.cmd` shim on your PATH. Elsewhere, link into `~/
 
 ## Live runs and history
 
-From an app detail page, pick an entry point or preset, start a run, and watch Server-Sent Events output. Cancel posts with CSRF. History lists web and `pyapp` runs together. Audit is read only under Audit in the nav.
+From an app detail page, pick an entry point or preset, start a run, and watch Server-Sent Events output. Cancel posts with CSRF. History lists web, schedule, and `pyapp` runs together. Audit is read only under Audit in the nav.
+
+## Phase 2 features
+
+- Check for PyPI updates from the dashboard or an app page
+- Bulk import existing project folders that already have a `.venv`
+- Interval schedules (server must stay running)
+- Catalog JSON export from Settings or `pyapp export`
 
 ## Docs
 

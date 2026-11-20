@@ -39,17 +39,6 @@ import {
   streamKeyJob,
   streamKeyRun,
 } from '../core/stream-hub.js';
-
-function seedFinishedStream(
-  key: string,
-  log: string,
-  endStatus: string,
-  finished: boolean,
-): void {
-  if (!finished || isStreamClosed(key)) return;
-  if (log) appendStreamLine(key, log);
-  closeStream(key, endStatus);
-}
 import {
   cancelWebRun,
   getRun,
@@ -66,6 +55,16 @@ import {
   updatePresetArgs,
 } from '../core/presets.js';
 import { getAudit, listAudit } from '../core/audit-query.js';
+import {
+  createSchedule,
+  deleteSchedule,
+  getSchedule,
+  listSchedules,
+  startScheduleTicker,
+  updateSchedule,
+} from '../core/schedules.js';
+import { exportCatalog } from '../core/export.js';
+import { findVenvAt, scanRegisterRoot, suggestSlugFromFolder } from '../core/register.js';
 import { authenticate, ensureAdminUser, getUser } from './users.js';
 import {
   destroySession,
@@ -77,12 +76,24 @@ import {
 import { resolveHome } from './home.js';
 import { attachSseStream } from './sse.js';
 
+function seedFinishedStream(
+  key: string,
+  log: string,
+  endStatus: string,
+  finished: boolean,
+): void {
+  if (!finished || isStreamClosed(key)) return;
+  if (log) appendStreamLine(key, log);
+  closeStream(key, endStatus);
+}
+
 const SESSION_COOKIE = 'pyapps_session';
 
 type AppContext = {
   config: AppConfig;
   db: Db;
   stopJobs: () => void;
+  stopSchedules: () => void;
 };
 
 declare module 'fastify' {
@@ -199,13 +210,14 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   const db = openDatabase(config.dbPath);
   ensureAdminUser(db, config.adminUsername, config.adminPassword);
   const stopJobs = startJobRunner(db, config.jobConcurrency);
+  const stopSchedules = startScheduleTicker(db);
   const failures = createFailureTracker();
 
   const app = Fastify({
     logger: true,
     trustProxy: false,
   });
-  app.decorate('ctx', { config, db, stopJobs });
+  app.decorate('ctx', { config, db, stopJobs, stopSchedules });
 
   await app.register(cookie);
   await app.register(rateLimit, {
@@ -353,6 +365,8 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
           source: z.unknown().optional(),
           python: z.string().optional(),
           folder: z.string().optional(),
+          folders: z.array(z.string()).optional(),
+          scanRoot: z.string().optional(),
           editable: z.boolean().optional(),
           confirmSlug: z.string().optional(),
         })
@@ -376,6 +390,8 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
           source,
           python: body.python,
           folder: body.folder,
+          folders: body.folders,
+          scanRoot: body.scanRoot,
           editable: body.editable,
           home,
           who: request.username ?? 'admin',
@@ -462,7 +478,10 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     const q = request.query as Record<string, string | undefined>;
     return listRuns(db, {
       slug: q.slug,
-      source: q.source === 'cli' || q.source === 'web' ? q.source : undefined,
+      source:
+          q.source === 'cli' || q.source === 'web' || q.source === 'schedule'
+            ? q.source
+            : undefined,
       result:
         q.result === 'ok' || q.result === 'failed' || q.result === 'running'
           ? q.result
@@ -481,7 +500,10 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     const q = request.query as Record<string, string | undefined>;
     return listRuns(db, {
       appId: appRow.id,
-      source: q.source === 'cli' || q.source === 'web' ? q.source : undefined,
+      source:
+          q.source === 'cli' || q.source === 'web' || q.source === 'schedule'
+            ? q.source
+            : undefined,
       result:
         q.result === 'ok' || q.result === 'failed' || q.result === 'running'
           ? q.result
@@ -705,8 +727,144 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     });
   }
 
+  app.post('/api/import/preview', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const body = z
+      .object({
+        folders: z.array(z.string()).optional(),
+        scanRoot: z.string().optional(),
+      })
+      .parse(request.body);
+    try {
+      const candidates = body.scanRoot ? scanRegisterRoot(body.scanRoot) : [];
+      for (const folder of body.folders ?? []) {
+        const resolved = path.resolve(folder);
+        if (candidates.some((c) => c.folder === resolved)) continue;
+        const venvPath = findVenvAt(resolved);
+        const sourceFolder =
+          path.basename(venvPath) === '.venv' ? path.dirname(venvPath) : resolved;
+        candidates.push({
+          folder: sourceFolder,
+          venvPath,
+          suggestedSlug: suggestSlugFromFolder(sourceFolder),
+          suggestedName: path.basename(sourceFolder),
+          kind: 'project',
+        });
+      }
+      return {
+        candidates: candidates.map((c) => ({
+          ...c,
+          collision: Boolean(getAppBySlug(db, c.suggestedSlug)),
+        })),
+      };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get('/api/schedules', { preHandler: requireAuth }, async () => ({
+    schedules: listSchedules(db),
+  }));
+
+  app.post('/api/schedules', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const body = z
+      .object({
+        slug: z.string(),
+        presetId: z.number().int().optional(),
+        entryPoint: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        intervalMinutes: z.number().int(),
+        cwd: z.string().optional(),
+        enabled: z.boolean().optional(),
+      })
+      .parse(request.body);
+    const appRow = getAppBySlug(db, parseSlug(body.slug));
+    if (!appRow) return reply.code(404).send({ error: 'Not found' });
+    try {
+      const schedule = createSchedule(db, {
+        app_id: appRow.id,
+        preset_id: body.presetId,
+        entry_point: body.entryPoint,
+        args: body.args,
+        interval_minutes: body.intervalMinutes,
+        cwd: body.cwd,
+        enabled: body.enabled,
+      });
+      writeAudit(db, {
+        who: request.username ?? 'admin',
+        action: 'schedule.create',
+        result: 'ok',
+        details: JSON.stringify({ id: schedule.id, slug: body.slug }),
+        ip: clientIp(request),
+      });
+      return { schedule };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.patch('/api/schedules/:id', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const id = Number((request.params as { id: string }).id);
+    const body = z
+      .object({
+        enabled: z.boolean().optional(),
+        intervalMinutes: z.number().int().optional(),
+        cwd: z.string().nullable().optional(),
+      })
+      .parse(request.body);
+    try {
+      const schedule = updateSchedule(db, id, {
+        enabled: body.enabled,
+        interval_minutes: body.intervalMinutes,
+        cwd: body.cwd,
+      });
+      writeAudit(db, {
+        who: request.username ?? 'admin',
+        action: 'schedule.update',
+        result: 'ok',
+        details: JSON.stringify({ id }),
+        ip: clientIp(request),
+      });
+      return { schedule };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete('/api/schedules/:id', { preHandler: requireAuth }, async (request, reply) => {
+    requireCsrf(request, reply);
+    if (reply.sent) return;
+    const id = Number((request.params as { id: string }).id);
+    if (!getSchedule(db, id)) return reply.code(404).send({ error: 'Not found' });
+    deleteSchedule(db, id);
+    writeAudit(db, {
+      who: request.username ?? 'admin',
+      action: 'schedule.delete',
+      result: 'ok',
+      details: JSON.stringify({ id }),
+      ip: clientIp(request),
+    });
+    return { ok: true };
+  });
+
+  app.get('/api/catalog/export', { preHandler: requireAuth }, async (request, reply) => {
+    const q = request.query as Record<string, string | undefined>;
+    const payload = exportCatalog(db, {
+      includePresets: q.presets !== '0',
+      includeSchedules: q.schedules === '1',
+    });
+    void reply.header('Content-Disposition', 'attachment; filename="pyapps-catalog.json"');
+    return payload;
+  });
+
   app.addHook('onClose', async () => {
     stopJobs();
+    stopSchedules();
     db.close();
   });
 
