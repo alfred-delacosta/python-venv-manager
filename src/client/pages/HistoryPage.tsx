@@ -96,6 +96,7 @@ export function HistoryPage() {
             <MenuItem value="">All</MenuItem>
             <MenuItem value="web">web</MenuItem>
             <MenuItem value="cli">cli</MenuItem>
+            <MenuItem value="schedule">schedule</MenuItem>
           </TextField>
           <TextField
             select

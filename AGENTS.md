@@ -30,6 +30,9 @@
 
 ## Phase scope
 
-- 1A: auth, LAN guard, uv install/catalog, CLI, polled job status
-- 1B: SSE live runs and job logs, history UI, presets, audit viewer, motion polish
-- Later: update notices, bulk import, schedules, secrets, favorites
+- 1A: auth, LAN guard, uv install/catalog, CLI, polled job status (done)
+- 1B: SSE live runs and job logs, history UI, presets, audit viewer, motion polish (done)
+- 2: update notices, bulk import, scheduled runs, catalog export (see docs/phase-2.md)
+- 3: per-app secrets, favorites, lockfile view, accessibility audit
+
+Grand plan: docs/plan.md

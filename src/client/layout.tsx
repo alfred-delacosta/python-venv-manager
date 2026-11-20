@@ -16,8 +16,10 @@ import { useSession } from './session';
 const nav = [
   { to: '/', label: 'Dashboard' },
   { to: '/add', label: 'Add' },
+  { to: '/import', label: 'Import' },
   { to: '/jobs', label: 'Jobs' },
   { to: '/history', label: 'History' },
+  { to: '/schedules', label: 'Schedules' },
   { to: '/audit', label: 'Audit' },
   { to: '/settings', label: 'Settings' },
   { to: '/health', label: 'Health' },

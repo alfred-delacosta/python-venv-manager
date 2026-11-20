@@ -1,6 +1,6 @@
 /* Copyright Advanced Software and AI Solutions LLC */
 import { useEffect, useState } from 'react';
-import { Button, Stack, TextField, Typography, Paper } from '@mui/material';
+import { Button, FormControlLabel, Checkbox, Stack, TextField, Typography, Paper } from '@mui/material';
 import { useSession } from '../session';
 
 export function SettingsPage() {
@@ -8,6 +8,7 @@ export function SettingsPage() {
   const [home, setHome] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState<number | ''>('');
+  const [includeSchedules, setIncludeSchedules] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,6 +39,25 @@ export function SettingsPage() {
     setMessage('Home folder updated.');
   }
 
+  async function downloadExport() {
+    setError(null);
+    const q = includeSchedules ? '?schedules=1' : '';
+    const res = await api(`/api/catalog/export${q}`);
+    if (!res.ok) {
+      setError('Export failed');
+      return;
+    }
+    const json = await res.json();
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pyapps-catalog.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    setMessage('Catalog export downloaded.');
+  }
+
   return (
     <Stack spacing={3} maxWidth={640}>
       <Typography variant="h4" component="h1">
@@ -61,6 +81,28 @@ export function SettingsPage() {
           {message && <Typography color="success.main">{message}</Typography>}
           <Button variant="contained" onClick={() => void save()}>
             Save home folder
+          </Button>
+        </Stack>
+      </Paper>
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack spacing={2}>
+          <Typography variant="h5" component="h2">
+            Catalog export
+          </Typography>
+          <Typography color="text.secondary">
+            Downloads apps and presets as JSON. Does not include passwords, sessions, or run logs. Use npm run backup for a full database copy.
+          </Typography>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={includeSchedules}
+                onChange={(e) => setIncludeSchedules(e.target.checked)}
+              />
+            }
+            label="Include schedules"
+          />
+          <Button variant="outlined" onClick={() => void downloadExport()}>
+            Download catalog JSON
           </Button>
         </Stack>
       </Paper>

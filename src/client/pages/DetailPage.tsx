@@ -167,20 +167,46 @@ export function DetailPage() {
             </Typography>
             <Typography color="text.secondary">
               {data.app.kind} · {data.app.slug} · {data.app.version ?? 'no version'} · {data.app.source_type}
+              {Boolean((data.app as { update_available?: number }).update_available) &&
+                ` · update ${(data.app as { remote_version?: string | null }).remote_version ?? 'available'}`}
             </Typography>
+            {data.app.source_type === 'registered' && (
+              <Typography variant="body2" color="warning.main" sx={{ mt: 1 }}>
+                Registered apps cannot use Update or Repair. Reinstall from a source if you need a rebuild.
+              </Typography>
+            )}
             <Typography variant="body2" sx={{ mt: 1 }}>
               Venv: {data.app.venv_path}
             </Typography>
           </div>
           <Stack direction="row" gap={1} flexWrap="wrap">
-            <Button variant="outlined" onClick={() => void enqueue('update')}>
+            {data.app.source_type === 'pypi' && (
+              <Button
+                variant="outlined"
+                onClick={() => void enqueue('check-updates', { slug: data.app.slug })}
+              >
+                Check updates
+              </Button>
+            )}
+            <Button
+              variant="outlined"
+              disabled={data.app.source_type === 'registered'}
+              onClick={() => void enqueue('update')}
+            >
               Update
             </Button>
-            <Button variant="outlined" onClick={() => void enqueue('repair')}>
+            <Button
+              variant="outlined"
+              disabled={data.app.source_type === 'registered'}
+              onClick={() => void enqueue('repair')}
+            >
               Repair
             </Button>
             <Button component={RouterLink} to={`/history?slug=${data.app.slug}`} variant="text">
               History
+            </Button>
+            <Button component={RouterLink} to="/schedules" variant="text">
+              Schedules
             </Button>
           </Stack>
         </Stack>
