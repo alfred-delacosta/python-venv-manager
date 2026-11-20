@@ -5,6 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 export type Db = DatabaseSync;
 
+export const SCHEMA_VERSION = 2;
+
 export function openDatabase(dbPath: string): Db {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -14,7 +16,26 @@ export function openDatabase(dbPath: string): Db {
   return db;
 }
 
-export function migrate(db: Db): void {
+function getSchemaVersion(db: Db): number {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as
+    | { value: string }
+    | undefined;
+  return row ? Number(row.value) || 0 : 0;
+}
+
+function setSchemaVersion(db: Db, version: number): void {
+  db.prepare(
+    `INSERT INTO meta (key, value) VALUES ('schema_version', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(String(version));
+}
+
+function tableHasColumn(db: Db, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((r) => r.name === column);
+}
+
+function ensureBaseSchema(db: Db): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -82,7 +103,7 @@ export function migrate(db: Db): void {
       exit_code INTEGER,
       duration_ms INTEGER,
       log TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL CHECK (source IN ('cli', 'web')),
+      source TEXT NOT NULL CHECK (source IN ('cli', 'web', 'schedule')),
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
     );
 
@@ -113,6 +134,73 @@ export function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_presets_app ON presets(app_id, name COLLATE NOCASE);
   `);
+}
+
+function migrateToV2(db: Db): void {
+  if (!tableHasColumn(db, 'apps', 'remote_version')) {
+    db.exec(`ALTER TABLE apps ADD COLUMN remote_version TEXT`);
+  }
+  if (!tableHasColumn(db, 'apps', 'update_checked_at')) {
+    db.exec(`ALTER TABLE apps ADD COLUMN update_checked_at TEXT`);
+  }
+  if (!tableHasColumn(db, 'apps', 'update_available')) {
+    db.exec(`ALTER TABLE apps ADD COLUMN update_available INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Recreate runs table if schedule source is not accepted (older CHECK).
+  const probe = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'`).get() as
+    | { sql: string }
+    | undefined;
+  if (probe?.sql && !probe.sql.includes("'schedule'")) {
+    db.exec(`
+      CREATE TABLE runs_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        app_id INTEGER NOT NULL,
+        entry_point TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        exit_code INTEGER,
+        duration_ms INTEGER,
+        log TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL CHECK (source IN ('cli', 'web', 'schedule')),
+        FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
+      );
+      INSERT INTO runs_v2 (id, app_id, entry_point, started_at, ended_at, exit_code, duration_ms, log, source)
+      SELECT id, app_id, entry_point, started_at, ended_at, exit_code, duration_ms, log, source FROM runs;
+      DROP TABLE runs;
+      ALTER TABLE runs_v2 RENAME TO runs;
+      CREATE INDEX IF NOT EXISTS idx_runs_app_id ON runs(app_id, id DESC);
+    `);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER NOT NULL,
+      preset_id INTEGER,
+      entry_point TEXT NOT NULL,
+      args_json TEXT NOT NULL DEFAULT '[]',
+      interval_minutes INTEGER NOT NULL,
+      next_run_at TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      cwd TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE,
+      FOREIGN KEY (preset_id) REFERENCES presets(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(enabled, next_run_at);
+  `);
+}
+
+export function migrate(db: Db): void {
+  ensureBaseSchema(db);
+  let version = getSchemaVersion(db);
+  if (version < 2) {
+    migrateToV2(db);
+    version = 2;
+  }
+  setSchemaVersion(db, Math.max(version, SCHEMA_VERSION));
 }
 
 export function nowIso(date = new Date()): string {

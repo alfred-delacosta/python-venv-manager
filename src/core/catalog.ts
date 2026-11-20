@@ -16,6 +16,9 @@ export type AppRow = {
   venv_path: string;
   version: string | null;
   entry_points_json: string;
+  remote_version?: string | null;
+  update_checked_at?: string | null;
+  update_available?: number;
   created_at: string;
   updated_at: string;
 };
@@ -29,7 +32,7 @@ export type RunRow = {
   exit_code: number | null;
   duration_ms: number | null;
   log: string;
-  source: 'cli' | 'web';
+  source: 'cli' | 'web' | 'schedule';
 };
 
 export function listApps(db: Db, kind?: AppKind): AppRow[] {
@@ -122,7 +125,7 @@ export function insertRun(
     exit_code?: number | null;
     duration_ms?: number | null;
     log?: string;
-    source: 'cli' | 'web';
+    source: 'cli' | 'web' | 'schedule';
   },
 ): number {
   const result = db.prepare(

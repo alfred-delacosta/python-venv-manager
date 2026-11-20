@@ -34,7 +34,7 @@ export function getRun(db: Db, id: number): RunRow | undefined {
 export type RunFilter = {
   appId?: number;
   slug?: string;
-  source?: 'cli' | 'web';
+  source?: 'cli' | 'web' | 'schedule';
   result?: 'ok' | 'failed' | 'running';
   from?: string;
   to?: string;
@@ -144,6 +144,7 @@ export function startWebRun(
     cwd?: string;
     who: string;
     ip?: string;
+    source?: 'web' | 'schedule';
   },
 ): RunRow {
   const slug = parseSlug(input.slug);
@@ -181,20 +182,21 @@ export function startWebRun(
 
   const resolved = resolveEntryPoint(app.venv_path, entry);
   const startedAt = nowIso();
+  const source = input.source ?? 'web';
   const runId = insertRun(db, {
     app_id: app.id,
     entry_point: entry,
     started_at: startedAt,
     log: '',
-    source: 'web',
+    source,
   });
 
   appendStreamStatus(streamKeyRun(runId), 'running');
   writeAudit(db, {
     who: input.who,
-    action: 'run.start',
+    action: source === 'schedule' ? 'run.schedule' : 'run.start',
     result: 'ok',
-    details: JSON.stringify({ runId, slug, entry }),
+    details: JSON.stringify({ runId, slug, entry, source }),
     ip: input.ip,
   });
 
