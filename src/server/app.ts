@@ -126,7 +126,7 @@ async function requireAuth(request: FastifyRequest, reply: FastifyReply): Promis
       if (stale) destroySession(db, stale.id);
     }
     if (wantsHtml(request) && request.method === 'GET') {
-      return reply.code(401).type('text/html').send(loginPage(''));
+      return reply.code(401).type('text/html').send(loginPage('', requestNonce(request)));
     }
     return reply.code(401).send({ error: 'Unauthorized' });
   }
@@ -163,28 +163,39 @@ function requireCsrf(request: FastifyRequest, reply: FastifyReply): void {
   }
 }
 
-function loginPage(error: string, csrf = ''): string {
+function loginPage(error: string, nonce = '', csrf = ''): string {
   const err = error
-    ? `<p role="alert" style="color:#b00020">${escapeHtml(error)}</p>`
+    ? `<p role="alert" class="err">${escapeHtml(error)}</p>`
     : '';
+  const nonceAttr = nonce ? ` nonce="${escapeHtml(nonce)}"` : '';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Sign in - Python Venv Manager</title></head>
-<body style="font-family:Segoe UI,sans-serif;max-width:28rem;margin:3rem auto;padding:1rem">
+${nonce ? `<meta name="csp-nonce" content="${escapeHtml(nonce)}"/>` : ''}
+<title>Sign in - Python Venv Manager</title>
+<style${nonceAttr}>
+body{font-family:Segoe UI,sans-serif;max-width:28rem;margin:3rem auto;padding:1rem}
+.err{color:#b00020}
+label{display:block;margin:.75rem 0}
+input{display:block;width:100%;min-height:44px;padding:.5rem;box-sizing:border-box}
+button{min-height:44px;min-width:44px;padding:.5rem 1rem}
+footer{margin-top:2rem;font-size:.875rem}
+</style>
+</head>
+<body>
 <h1>Python Venv Manager</h1>
 <p>Sign in to continue.</p>
 ${err}
 <form method="post" action="/login">
-<label style="display:block;margin:.75rem 0">Username
-<input name="username" autocomplete="username" required style="display:block;width:100%;min-height:44px;padding:.5rem"/>
+<label>Username
+<input name="username" autocomplete="username" required/>
 </label>
-<label style="display:block;margin:.75rem 0">Password
-<input name="password" type="password" autocomplete="current-password" required style="display:block;width:100%;min-height:44px;padding:.5rem"/>
+<label>Password
+<input name="password" type="password" autocomplete="current-password" required/>
 </label>
 ${csrf ? `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}"/>` : ''}
-<button type="submit" style="min-height:44px;min-width:44px;padding:.5rem 1rem">Sign in</button>
+<button type="submit">Sign in</button>
 </form>
-<footer style="margin-top:2rem;font-size:.875rem">${escapeHtml(FOOTER_CREDIT)}</footer>
+<footer>${escapeHtml(FOOTER_CREDIT)}</footer>
 </body></html>`;
 }
 
@@ -204,6 +215,18 @@ function injectNonce(html: string, nonce: string): string {
       '</head>',
       `<meta name="csp-nonce" content="${nonce}"/></head>`,
     );
+}
+
+function requestNonce(request: FastifyRequest): string {
+  return (request as FastifyRequest & { scriptNonce?: string }).scriptNonce ?? '';
+}
+
+function sendSpaIndex(request: FastifyRequest, reply: FastifyReply, clientDir: string) {
+  const nonce = requestNonce(request);
+  const indexPath = path.join(clientDir, 'index.html');
+  let html = fs.readFileSync(indexPath, 'utf8');
+  html = injectNonce(html, nonce);
+  return reply.type('text/html').send(html);
 }
 
 export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
@@ -245,9 +268,24 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     }
     const nonce = crypto.randomBytes(16).toString('base64url');
     (request as FastifyRequest & { scriptNonce: string }).scriptNonce = nonce;
+    // style-src-elem + nonce covers Emotion <style> tags. style-src-attr allows
+    // MUI dynamic element.style / style="" (nonces cannot apply to attributes).
     void reply.header(
       'Content-Security-Policy',
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+      [
+        `default-src 'self'`,
+        `script-src 'self' 'nonce-${nonce}'`,
+        `style-src 'self' 'nonce-${nonce}'`,
+        `style-src-elem 'self' 'nonce-${nonce}'`,
+        `style-src-attr 'unsafe-inline'`,
+        `img-src 'self' data:`,
+        `font-src 'self' data:`,
+        `connect-src 'self'`,
+        `object-src 'none'`,
+        `base-uri 'self'`,
+        `frame-ancestors 'none'`,
+        `form-action 'self'`,
+      ].join('; '),
     );
     void reply.header('X-Content-Type-Options', 'nosniff');
     void reply.header('Referrer-Policy', 'no-referrer');
@@ -274,14 +312,20 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
       const userKey = `user:${username.toLowerCase()}`;
       if (isLockedOut(failures, ipKey) || isLockedOut(failures, userKey)) {
         writeAudit(db, { who: username || 'unknown', action: 'login', result: 'locked', ip });
-        return reply.code(429).type('text/html').send(loginPage('Too many failed attempts. Try again later.'));
+        return reply
+          .code(429)
+          .type('text/html')
+          .send(loginPage('Too many failed attempts. Try again later.', requestNonce(request)));
       }
       const user = authenticate(db, username, password);
       if (!user) {
         recordFailure(failures, ipKey);
         recordFailure(failures, userKey);
         writeAudit(db, { who: username || 'unknown', action: 'login', result: 'failure', ip });
-        return reply.code(401).type('text/html').send(loginPage('Invalid username or password.'));
+        return reply
+          .code(401)
+          .type('text/html')
+          .send(loginPage('Invalid username or password.', requestNonce(request)));
       }
       clearFailures(failures, ipKey);
       clearFailures(failures, userKey);
@@ -316,7 +360,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     const token = request.cookies[SESSION_COOKIE];
     const session = validateSession(findSession(db, config.sessionSecret, token));
     if (session) return reply.redirect('/');
-    return reply.type('text/html').send(loginPage(''));
+    return reply.type('text/html').send(loginPage('', requestNonce(request)));
   });
 
   app.get('/api/session', { preHandler: requireAuth }, async (request) => {
@@ -701,21 +745,26 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
 
   const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../dist/client');
   if (fs.existsSync(clientDir)) {
+    // index: false so "/" is not served raw (without CSP nonce). SPA HTML always
+    // goes through injectNonce so Emotion/MUI can attach nonced <style> tags.
     await app.register(fastifyStatic, {
       root: clientDir,
       wildcard: false,
+      index: false,
+    });
+    app.get('/', { preHandler: requireAuth }, async (request, reply) => {
+      return sendSpaIndex(request, reply, clientDir);
     });
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {
         return reply.code(404).send({ error: 'Not found' });
       }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return reply.code(404).send({ error: 'Not found' });
+      }
       await requireAuth(request, reply);
       if (reply.sent) return;
-      const nonce = (request as FastifyRequest & { scriptNonce: string }).scriptNonce;
-      const indexPath = path.join(clientDir, 'index.html');
-      let html = fs.readFileSync(indexPath, 'utf8');
-      html = injectNonce(html, nonce);
-      return reply.type('text/html').send(html);
+      return sendSpaIndex(request, reply, clientDir);
     });
   } else {
     app.get('/', { preHandler: requireAuth }, async (_request, reply) => {

@@ -17,15 +17,16 @@ export function AppProviders({ children }: { children: ReactNode }) {
   });
   const reduceMotion = prefersReducedMotion();
 
-  const cache = useMemo(
-    () =>
-      createCache({
-        key: 'pyapps',
-        nonce: readNonce(),
-        prepend: true,
-      }),
-    [],
-  );
+  // Nonce comes from the server-injected meta tag on every HTML response.
+  // Without it, Emotion <style> tags are blocked by CSP and MUI looks unstyled.
+  const cache = useMemo(() => {
+    const nonce = readNonce();
+    return createCache({
+      key: 'pyapps',
+      nonce,
+      prepend: true,
+    });
+  }, []);
 
   const theme = useMemo(
     () =>
