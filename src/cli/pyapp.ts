@@ -11,13 +11,15 @@ import { appendCappedLog } from '../core/redact.js';
 import { MAX_LOG_BYTES } from '../core/config.js';
 import { writeAudit } from '../core/audit.js';
 import { venvPython } from '../core/paths.js';
+import { exportCatalog } from '../core/export.js';
 
 function usage(): never {
   console.log(`Usage:
   pyapp list
   pyapp path <app>
   pyapp activate <project> [--shell powershell|cmd|bash|zsh]
-  pyapp run <app> [entry] [-- args...]`);
+  pyapp run <app> [entry] [-- args...]
+  pyapp export [--schedules]`);
   process.exit(1);
 }
 
@@ -71,6 +73,15 @@ export function main(argv = process.argv): void {
     for (const app of apps) {
       console.log(`${app.kind}\t${app.slug}\t${app.version ?? '-'}\t${app.venv_path}`);
     }
+    db.close();
+    return;
+  }
+
+  if (parsed.command === 'export') {
+    const { db } = openDb();
+    const includeSchedules = process.argv.includes('--schedules');
+    const payload = exportCatalog(db, { includePresets: true, includeSchedules });
+    console.log(JSON.stringify(payload, null, 2));
     db.close();
     return;
   }
