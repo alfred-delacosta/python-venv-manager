@@ -24,6 +24,14 @@ import {
 } from './validators.js';
 import { writeAudit } from './audit.js';
 import { appendStreamLine, appendStreamStatus, closeStream, streamKeyJob } from './stream-hub.js';
+import { checkAllUpdates, checkAppUpdate, markUpdateResult } from './updates.js';
+import {
+  findVenvAt,
+  inspectRegisteredVenv,
+  parseBulkFolders,
+  scanRegisterRoot,
+  suggestSlugFromFolder,
+} from './register.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
@@ -49,6 +57,8 @@ type JobPayload = {
   source?: InstallSource;
   python?: string;
   folder?: string;
+  folders?: string[];
+  scanRoot?: string;
   editable?: boolean;
   home: string;
   who: string;
@@ -197,6 +207,9 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
     } else if (payload.type === 'update') {
       const app = getAppBySlug(db, payload.slug!);
       if (!app) throw new Error('App not found');
+      if (app.source_type === 'registered') {
+        throw new Error('Registered apps have no rebuildable source. Remove and reinstall, or repair is unavailable.');
+      }
       const source = installSourceSchema.parse(
         app.source_type === 'pypi'
           ? { type: 'pypi', requirement: app.source_value }
@@ -210,7 +223,7 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
           python: payload.python,
           onLog,
         });
-        upsertApp(db, {
+        const row = upsertApp(db, {
           slug: app.slug,
           name: app.name,
           kind: 'project',
@@ -220,6 +233,7 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
           version: result.version,
           entry_points: result.entry_points,
         });
+        markUpdateResult(db, row.id, null, false);
       } else {
         const result = await repairApp({
           home: payload.home,
@@ -229,7 +243,7 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
           python: payload.python,
           onLog,
         });
-        upsertApp(db, {
+        const row = upsertApp(db, {
           slug: result.slug,
           name: app.name,
           kind: 'app',
@@ -239,10 +253,14 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
           version: result.version,
           entry_points: result.entry_points,
         });
+        markUpdateResult(db, row.id, null, false);
       }
     } else if (payload.type === 'repair') {
       const app = getAppBySlug(db, payload.slug!);
       if (!app) throw new Error('App not found');
+      if (app.source_type === 'registered') {
+        throw new Error('Registered apps cannot be repaired without an install source.');
+      }
       const source = installSourceSchema.parse(
         app.source_type === 'pypi'
           ? { type: 'pypi', requirement: app.source_value }
@@ -284,23 +302,73 @@ async function executeJob(db: Db, jobId: number): Promise<void> {
         throw new Error('Missing register fields');
       }
       const folder = path.resolve(payload.folder);
-      const venvPath =
-        payload.kind === 'project'
-          ? path.join(folder, '.venv')
-          : path.join(folder, '.venv');
-      const cfg = path.join(venvPath, 'pyvenv.cfg');
-      if (!fs.existsSync(cfg)) {
-        throw new Error('Existing venv needs pyvenv.cfg');
-      }
+      const venvPath = findVenvAt(folder);
+      const sourceFolder =
+        path.basename(venvPath) === '.venv' ? path.dirname(venvPath) : folder;
+      onLog(`Registering ${sourceFolder}\n`);
+      const inspected = await inspectRegisteredVenv(venvPath, payload.slug);
       upsertApp(db, {
         slug: payload.slug,
         name: payload.name,
         kind: payload.kind,
         source_type: 'registered',
-        source_value: folder,
+        source_value: sourceFolder,
         venv_path: venvPath,
-        entry_points: [],
+        version: inspected.version,
+        entry_points: inspected.entry_points,
       });
+      onLog(`Entry points: ${inspected.entry_points.join(', ') || '(none)'}\n`);
+    } else if (payload.type === 'register-bulk') {
+      const folders: string[] = [];
+      if (payload.folders?.length) {
+        folders.push(...parseBulkFolders(payload.folders));
+      }
+      if (payload.scanRoot) {
+        for (const candidate of scanRegisterRoot(payload.scanRoot)) {
+          folders.push(candidate.folder);
+        }
+      }
+      if (folders.length === 0) throw new Error('No folders to import');
+      let imported = 0;
+      let skipped = 0;
+      for (const folder of folders) {
+        try {
+          const venvPath = findVenvAt(folder);
+          const sourceFolder =
+            path.basename(venvPath) === '.venv' ? path.dirname(venvPath) : folder;
+          const slug = suggestSlugFromFolder(sourceFolder);
+          if (getAppBySlug(db, slug)) {
+            onLog(`Skip ${slug}: already registered\n`);
+            skipped += 1;
+            continue;
+          }
+          const inspected = await inspectRegisteredVenv(venvPath, slug);
+          upsertApp(db, {
+            slug,
+            name: path.basename(sourceFolder),
+            kind: 'project',
+            source_type: 'registered',
+            source_value: sourceFolder,
+            venv_path: venvPath,
+            version: inspected.version,
+            entry_points: inspected.entry_points,
+          });
+          onLog(`Imported ${slug}\n`);
+          imported += 1;
+        } catch (err) {
+          skipped += 1;
+          onLog(`Skip ${folder}: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+      }
+      onLog(`Done. imported=${imported} skipped=${skipped}\n`);
+    } else if (payload.type === 'check-updates') {
+      if (payload.slug) {
+        const result = await checkAppUpdate(db, payload.slug, onLog);
+        onLog(JSON.stringify(result, null, 2) + '\n');
+      } else {
+        const results = await checkAllUpdates(db, onLog);
+        onLog(JSON.stringify(results, null, 2) + '\n');
+      }
     } else if (payload.type === 'uv-python-install') {
       if (!payload.python) throw new Error('Python version required');
       if (payload.python.startsWith('-')) {
