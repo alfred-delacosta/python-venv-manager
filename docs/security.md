@@ -32,9 +32,12 @@ Python Venv Manager is a single-user, self-hosted app for a trusted LAN or loopb
 
 ## Content Security Policy
 
-- HTML responses include a per-request CSP nonce for `script-src` and `style-src`.
+- HTML responses include a per-request CSP nonce for `script-src` and style *elements* (`style-src` / `style-src-elem`).
+- The SPA `index.html` is always served through the server with that nonce injected (including `/`). Static file serving does not emit a raw index without the nonce.
+- Emotion/MUI receives the nonce from `<meta name="csp-nonce">` so generated `<style>` tags are allowed.
+- `style-src-attr 'unsafe-inline'` is allowed so MUI can set dynamic `element.style` values. Nonces cannot apply to style attributes.
 - `object-src` is `none` and `frame-ancestors` is `none`.
-- `unsafe-inline` and `unsafe-eval` are never used.
+- `unsafe-eval` is never used. Script inline and style *elements* still require the nonce (no blanket `style-src 'unsafe-inline'`).
 
 ## Audit
 
